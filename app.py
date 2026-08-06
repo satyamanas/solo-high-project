@@ -6,8 +6,10 @@ Intermediate-level project combining:
      savings-goal projection, category overspend detection).
   2. An LLM CHAIN (Google Gemini API) that turns the calculator's
      numeric output into a natural-language financial coaching report.
+  3. A PDF EXPORT that bundles income/goal, expenses, the 50/30/20 check,
+     rule-based tips, and the latest AI report into one downloadable file.
 
-Tech: Streamlit, Pandas, Google Gemini API (google-generativeai)
+Tech: Streamlit, Pandas, Google Gemini API (google-generativeai), ReportLab
 """
 
 import io
@@ -26,6 +28,18 @@ try:
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
+
+# --------------------------------------------------------------------------
+# ReportLab for PDF export
+# --------------------------------------------------------------------------
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
+)
+from reportlab.lib.enums import TA_CENTER
 
 
 # ==========================================================================
@@ -211,6 +225,188 @@ def get_ai_suggestions(api_key: str, prompt: str, model_name: str = "gemini-1.5-
 
 
 # ==========================================================================
+# PDF EXPORT — bundles income/goal, expenses, 50/30/20 check, tips & AI report
+# ==========================================================================
+def _rupee(value) -> str:
+    """Format currency safely for ReportLab (avoids unicode glyph issues)."""
+    try:
+        return f"Rs. {value:,.2f}"
+    except (TypeError, ValueError):
+        return "Rs. 0.00"
+
+
+def generate_pdf_report(summary: dict, expenses_df: pd.DataFrame,
+                         ai_text: str | None = None) -> bytes:
+    """Builds a single PDF containing the full budget report and returns it as bytes."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter,
+        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitleCustom", parent=styles["Title"], alignment=TA_CENTER, textColor=colors.HexColor("#1a5632"),
+    )
+    subtitle_style = ParagraphStyle(
+        "SubtitleCustom", parent=styles["Normal"], alignment=TA_CENTER,
+        textColor=colors.grey, fontSize=10, spaceAfter=14,
+    )
+    h2_style = ParagraphStyle(
+        "H2Custom", parent=styles["Heading2"], textColor=colors.HexColor("#1a5632"),
+        spaceBefore=14, spaceAfter=8,
+    )
+    body_style = ParagraphStyle("BodyCustom", parent=styles["Normal"], fontSize=10, leading=14)
+    bullet_style = ParagraphStyle(
+        "BulletCustom", parent=styles["Normal"], fontSize=10, leading=14,
+        leftIndent=14, bulletIndent=0, spaceAfter=4,
+    )
+
+    story = []
+
+    # ---- Header ----
+    story.append(Paragraph("💰 AI Personal Budget Planner — Report", title_style))
+    story.append(Paragraph(
+        f"Generated on {datetime.now():%d %B %Y, %I:%M %p}", subtitle_style
+    ))
+    story.append(HRFlowable(width="100%", color=colors.HexColor("#1a5632"), thickness=1))
+    story.append(Spacer(1, 12))
+
+    # ---- Income & Goal Summary ----
+    story.append(Paragraph("Income & Savings Goal", h2_style))
+    summary_table_data = [
+        ["Monthly Income", _rupee(summary["income"])],
+        ["Total Expenses", _rupee(summary["total_expense"])],
+        ["Remaining Balance", _rupee(summary["remaining"])],
+        ["Savings Rate", f"{summary['savings_rate']:.1f}%"],
+        ["Savings Goal", _rupee(summary["savings_goal"])],
+        ["Target Timeline", f"{summary['goal_months']} months"],
+        [
+            "Projected Months to Goal",
+            f"{summary['months_to_goal']:.1f} months" if summary["months_to_goal"] is not None else "N/A (no surplus)",
+        ],
+        ["On Track?", "Yes" if summary["on_track"] else "No"],
+    ]
+    t = Table(summary_table_data, colWidths=[2.6 * inch, 3.4 * inch])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef5f0")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#1a5632")),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(t)
+
+    # ---- 50/30/20 Rule Check ----
+    story.append(Paragraph("50/30/20 Rule Check", h2_style))
+    rule_table_data = [
+        ["Category", "Actual", "Target"],
+        ["Needs (50%)", _rupee(summary["needs_actual"]), _rupee(summary["needs_target"])],
+        ["Wants (30%)", _rupee(summary["wants_actual"]), _rupee(summary["wants_target"])],
+        ["Savings (20%)", _rupee(summary["remaining"]), _rupee(summary["savings_target"])],
+    ]
+    t2 = Table(rule_table_data, colWidths=[2 * inch, 2 * inch, 2 * inch])
+    t2.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5632")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(t2)
+
+    # ---- Expense Breakdown by Category ----
+    story.append(Paragraph("Expense Breakdown by Category", h2_style))
+    if not summary["by_category"].empty:
+        cat_data = [["Category", "Amount", "% of Income"]]
+        for cat, amt in summary["by_category"].items():
+            pct = (amt / summary["income"] * 100) if summary["income"] > 0 else 0
+            cat_data.append([cat, _rupee(amt), f"{pct:.1f}%"])
+        t3 = Table(cat_data, colWidths=[2.5 * inch, 2 * inch, 1.5 * inch])
+        t3.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5632")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(t3)
+    else:
+        story.append(Paragraph("No expenses recorded.", body_style))
+
+    # ---- Detailed Expense Log ----
+    story.append(Paragraph("Detailed Expense Log", h2_style))
+    if not expenses_df.empty:
+        log_data = [["Date", "Category", "Description", "Amount"]]
+        for _, row in expenses_df.iterrows():
+            log_data.append([
+                str(row.get("Date", "")),
+                str(row.get("Category", "")),
+                str(row.get("Description", "") or "-"),
+                _rupee(row.get("Amount", 0)),
+            ])
+        t4 = Table(log_data, colWidths=[1 * inch, 1.6 * inch, 2.4 * inch, 1 * inch], repeatRows=1)
+        t4.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5632")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(t4)
+    else:
+        story.append(Paragraph("No expenses recorded.", body_style))
+
+    # ---- Rule-Based Tips ----
+    story.append(Paragraph("Rule-Based Tips", h2_style))
+    for tip in rule_based_tips(summary):
+        clean_tip = tip.replace("⚠️", "[!]")
+        story.append(Paragraph(f"&bull; {clean_tip}", bullet_style))
+
+    # ---- AI Suggestions ----
+    story.append(Paragraph("AI Financial Coaching Report", h2_style))
+    if ai_text:
+        clean_ai_text = ai_text.replace("⚠️", "[!]")
+        for para in clean_ai_text.split("\n"):
+            para = para.strip()
+            if para:
+                story.append(Paragraph(para, body_style))
+                story.append(Spacer(1, 4))
+    else:
+        story.append(Paragraph(
+            "No AI report was generated for this session. Generate one in the "
+            "'AI Suggestions' tab before exporting to include it here.",
+            body_style,
+        ))
+
+    # ---- Footer note ----
+    story.append(Spacer(1, 16))
+    story.append(HRFlowable(width="100%", color=colors.HexColor("#cccccc"), thickness=0.5))
+    story.append(Paragraph(
+        "Built with Streamlit, Pandas & Gemini API. Rule-based calculator ensures numbers "
+        "are always accurate; the LLM only explains and advises.",
+        ParagraphStyle("Footer", parent=styles["Normal"], fontSize=8, textColor=colors.grey, spaceBefore=8),
+    ))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# ==========================================================================
 # SIDEBAR — inputs
 # ==========================================================================
 st.sidebar.title("⚙️ Setup")
@@ -272,7 +468,9 @@ if st.sidebar.button("🗑️ Clear All Expenses"):
 st.title("💰 AI Personal Budget Planner")
 st.caption("LLM Chain + Rule-Based Calculator · Monthly expense tracking, savings goals, AI financial suggestions")
 
-tab_overview, tab_expenses, tab_ai = st.tabs(["📊 Overview", "🧾 Expenses", "🤖 AI Suggestions"])
+tab_overview, tab_expenses, tab_ai, tab_export = st.tabs(
+    ["📊 Overview", "🧾 Expenses", "🤖 AI Suggestions", "📄 Export PDF"]
+)
 
 summary = compute_budget_summary(
     income, st.session_state.expenses, savings_goal, goal_months
@@ -361,6 +559,42 @@ with tab_ai:
                 st.markdown(f"**Report {len(st.session_state.history) - i + 1}**")
                 st.markdown(past)
                 st.markdown("---")
+
+# ---------------------------------------------------------------- Export Tab
+with tab_export:
+    st.markdown("### 📄 Download Full Report as PDF")
+    st.caption(
+        "Bundles your monthly income, savings goal, full expense log, category "
+        "breakdown, 50/30/20 check, rule-based tips, and the latest AI coaching "
+        "report (if generated) into a single PDF file."
+    )
+
+    if summary["income"] <= 0:
+        st.warning("Enter a monthly income in the sidebar before generating a PDF report.")
+    else:
+        latest_ai_report = st.session_state.history[-1] if st.session_state.history else None
+
+        if latest_ai_report:
+            st.info("The most recently generated AI report will be included in the PDF.")
+        else:
+            st.info(
+                "No AI report has been generated yet — the PDF will still include all "
+                "rule-based numbers and tips. Visit the 'AI Suggestions' tab first if "
+                "you'd like the AI narrative included."
+            )
+
+        if st.button("📄 Generate PDF Report", type="primary"):
+            with st.spinner("Building PDF..."):
+                pdf_bytes = generate_pdf_report(
+                    summary, st.session_state.expenses, ai_text=latest_ai_report
+                )
+            st.success("PDF ready!")
+            st.download_button(
+                "⬇️ Download Budget Report (PDF)",
+                data=pdf_bytes,
+                file_name=f"budget_report_{datetime.now():%Y%m%d_%H%M}.pdf",
+                mime="application/pdf",
+            )
 
 st.markdown("---")
 st.caption("Built with Streamlit, Pandas & Gemini API · Rule-based calculator ensures numbers are always accurate; "
