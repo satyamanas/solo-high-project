@@ -211,7 +211,7 @@ Keep the entire response under 200 words. Use simple, friendly language.
     return prompt.strip()
 
 
-def get_ai_suggestions(api_key: str, prompt: str, model_name: str = "gemini-1.5-flash") -> str:
+def get_ai_suggestions(api_key: str, prompt: str, model_name: str = "gemini-3.5-flash") -> str:
     """Call the Gemini API (the 'LLM Chain' step) and return generated text."""
     if not GEMINI_AVAILABLE:
         return "google-generativeai package not installed. Run: pip install google-generativeai"
